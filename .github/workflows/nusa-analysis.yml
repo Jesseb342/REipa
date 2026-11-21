@@ -1,0 +1,88 @@
+name: Nusa IPA Analysis
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  analyze:
+    name: Analyze NusaNX beta with ReIPA
+    if: github.event_name == 'workflow_dispatch' || github.event.release.tag_name == 'nusa-analysis'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out ReIPA
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: reipa
+
+      - name: Build ReIPA CLI
+        working-directory: reipa
+        run: cargo build --release -p reipa --bin reipa
+
+      - name: Download Nusa IPA release asset
+        run: |
+          mkdir -p input reports
+          curl --fail --location --retry 3 \
+            "https://github.com/Jesseb342/REipa/releases/download/nusa-analysis/NusaNX.0.1.1.Beta.ipa" \
+            --output input/NusaNX.0.1.1.Beta.ipa
+          ls -lh input/NusaNX.0.1.1.Beta.ipa
+
+      - name: Verify encryption and inspect binary
+        shell: bash
+        run: |
+          set +e
+          BIN="./reipa/target/release/reipa"
+          IPA="input/NusaNX.0.1.1.Beta.ipa"
+
+          "$BIN" verify "$IPA" > reports/verify.txt 2>&1
+          echo "verify exit code: $?" >> reports/verify.txt
+
+          "$BIN" info "$IPA" > reports/info.txt 2>&1
+          echo "info exit code: $?" >> reports/info.txt
+
+      - name: Extract metadata and strings
+        shell: bash
+        run: |
+          set +e
+          BIN="./reipa/target/release/reipa"
+          IPA="input/NusaNX.0.1.1.Beta.ipa"
+
+          for command in symbols strings objc classdump swift-types; do
+            "$BIN" "$command" "$IPA" > "reports/$command.txt" 2>&1
+            echo "$command exit code: $?" >> "reports/$command.txt"
+          done
+
+      - name: Decompile all functions into a project
+        shell: bash
+        run: |
+          set +e
+          ./reipa/target/release/reipa decompile \
+            input/NusaNX.0.1.1.Beta.ipa \
+            --project ./reports/NusaNX.decompiled \
+            > reports/decompile-project.log 2>&1
+          echo "decompile exit code: $?" >> reports/decompile-project.log
+
+      - name: Upload analysis reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NusaNX-ReIPA-analysis
+          path: reports/
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 14
